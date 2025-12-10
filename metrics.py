@@ -261,7 +261,7 @@ if __name__ == "__main__":
             synthetic_nerf_list = ['chair', 'drums', 'ficus', 'hotdog', 'lego', 'materials', 'mic', 'ship']
             
             if scene_name in shelly_list:
-                test_data_extension = ''
+                test_data_extension = '.png'
             elif scene_name in synthetic_nerf_list:
                 test_data_extension = '.png'
             else:

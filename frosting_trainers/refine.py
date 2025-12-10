@@ -151,6 +151,9 @@ def refined_training(args):
     initial_proposal_std_range = args.initial_proposal_std_range
     final_proposal_range = args.final_proposal_range
     final_clamping_range = args.final_clamping_range
+
+    # - GDA PROJECT -
+    uniform_sampling_ratio = args.uniform_sampling_ratio
     
     use_background_sphere = args.use_background_sphere
     use_background_gaussians = args.use_background_gaussians
@@ -162,7 +165,10 @@ def refined_training(args):
     # n_vertices_in_fg = args.n_vertices_in_fg
     num_iterations = args.refinement_iterations
 
+    # - GDA PROJECT -
+    # We add the new parameter to the checkpoint path
     name_base = 'frostingfine_'
+    # name_base = 'frostingfine_unifSampRatioZZ_'
     if learn_shell:
         name_base += 'learnshell_'
     if use_surface_mesh_normal_consistency_loss:
@@ -188,6 +194,17 @@ def refined_training(args):
             ).replace(
                 'BB', str(final_proposal_range).replace('.', '')
             )
+        
+    # - GDA PROJECT -
+    # Replace uniform sampling ratio
+    # if args.use_adaptative_sampling_ratio:
+    #     frosting_checkpoint_path = frosting_checkpoint_path.replace(
+    #     'ZZ', 'Adaptative'
+    #     )
+    # else:
+    #     frosting_checkpoint_path = frosting_checkpoint_path.replace(
+    #         'ZZ', str(uniform_sampling_ratio).replace('.', '')
+    #         )
         
     if use_custom_bbox:
         fg_bbox_min = args.bboxmin
@@ -218,6 +235,11 @@ def refined_training(args):
     CONSOLE.print("   > Learn shell:", learn_shell)
     CONSOLE.print("   > Number of gaussians in frosting:", n_gaussians_in_frosting)
     CONSOLE.print("   > Number of samples per vertex for initializing frosting:", n_samples_per_vertex_for_initializing_frosting)
+    # - GDA PROJECT -
+    if args.use_adaptative_sampling_ratio:
+        CONSOLE.print("   > Using adaptative sampling ratio based on thickness when initializing frosting.")
+    else:
+        CONSOLE.print("   > Uniform sampling ratio when initializing frosting:", uniform_sampling_ratio)
     CONSOLE.print("   > Frosting level:", frosting_level)
     CONSOLE.print("   > Smooth initial frosting:", smooth_initial_frosting)
     CONSOLE.print("   > Number of neighbors for smoothing initial frosting:", n_neighbors_for_smoothing_initial_frosting)
@@ -340,6 +362,9 @@ def refined_training(args):
         final_clamping_range=final_clamping_range,
         use_background_sphere=use_background_sphere,
         use_background_gaussians=use_background_gaussians,
+        uniform_sampling_ratio=uniform_sampling_ratio,
+        force_exact_gaussians_number=args.force_exact_gaussians_number,
+        use_adaptative_sampling_ratio=args.use_adaptative_sampling_ratio,
     )
         
     CONSOLE.print(f'\Frosting model has been initialized.')

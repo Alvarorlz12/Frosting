@@ -110,6 +110,26 @@ if __name__ == "__main__":
     parser.add_argument('--refinement_time', type=str, default=None, 
                         help="Default configs for time to spend on refinement. Can be 'short', 'medium' or 'long'.")
       
+    # - GDA PROJECT ------------------------------------------------------------
+    # Flexible distribution for frosting initialization
+    parser.add_argument('--uniform_sampling_ratio', type=float, default=0.5,
+                        help='GDA PROJECT - Determines the ratio of uniform vs volumetric sampling when initializing frosting. Default is 0.5 (matches the original N/2 and N/2 strategy).')
+    # Allow starting from a precomputed SuGaR model and mesh
+    parser.add_argument('--precomputed_sugar_path', type=str, default=None,
+                    help='Path to a pre-trained coarse SuGaR model to skip coarse optimization.')
+    parser.add_argument('--precomputed_mesh_path', type=str, default=None,
+                    help='Path to a pre-extracted mesh to skip extraction.')
+    # Allow forcing exact number of Gaussians in frosting
+    parser.add_argument('--force_exact_gaussians_number', type=str2bool, default=False,
+                        help='If True, forces the exact number of Gaussians in frosting by adjusting the sampling process. Default is False.')
+    # Allow adaptative sampling ratio based on thickness
+    parser.add_argument('--use_adaptative_sampling_ratio', type=str2bool, default=False,
+                        help='GDA PROJECT - If True, uses an adaptative sampling ratio based on the thickness of the scene when initializing frosting. Default is False.')
+    # Enable filtering the cameras
+    parser.add_argument('--filter_cameras', type=str2bool, default=True,
+                        help='GDA PROJECT - If True, filters the cameras.json file to only keep train cameras for Frosting optimization. Default is True.')
+    # --------------------------------------------------------------------------
+    
     # Evaluation split
     parser.add_argument('--eval', type=str2bool, default=False, help='Use eval split.')
 
@@ -159,12 +179,29 @@ if __name__ == "__main__":
                 {white_background_str}\
                 --iterations 7_000"
         )
+
+        # - GDA PROJECT -
+        # Filter cameras.json to only keep train cameras for Frosting optimization
+        if args.filter_cameras:
+            os.system(f"python filter_cameras.py -m {gs_checkpoint_dir}")
     else:
         print("A vanilla 3DGS checkpoint was provided. Skipping the vanilla 3DGS optimization.")
         gs_checkpoint_dir = args.gs_output_dir
         if gs_checkpoint_dir[-1] != os.path.sep:
             gs_checkpoint_dir += os.path.sep
     
+    # - GDA PROJECT ------------------------------------------------------------
+    # Prepare optional arguments for precomputed SuGaR and mesh to avoid literal
+    # 'None' strings
+    sugar_arg = ""
+    if args.precomputed_sugar_path is not None:
+        sugar_arg = f"--precomputed_sugar_path {args.precomputed_sugar_path}"
+        
+    mesh_arg = ""
+    if args.precomputed_mesh_path is not None:
+        mesh_arg = f"--precomputed_mesh_path {args.precomputed_mesh_path}"
+
+    # Pass the uniform_sampling_ratio argument to train_mod.py
     # Runs the train.py python script with the given arguments
     os.system(
         f"python train.py \
@@ -204,5 +241,10 @@ if __name__ == "__main__":
             --refinement_time {args.refinement_time} \
             --eval {args.eval} \
             --gpu {args.gpu} \
-            --white_background {args.white_background}"
+            --white_background {args.white_background} \
+            --uniform_sampling_ratio {args.uniform_sampling_ratio}\
+            {sugar_arg} \
+            {mesh_arg} \
+            --force_exact_gaussians_number {args.force_exact_gaussians_number} \
+            --use_adaptative_sampling_ratio {args.use_adaptative_sampling_ratio}"
     )

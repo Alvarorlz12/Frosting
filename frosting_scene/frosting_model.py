@@ -205,6 +205,9 @@ class Frosting(nn.Module):
         project_gaussians_on_base_mesh:bool=False,  # Should be False. Used for ablation only.
         device=None,
         use_simple_adapt=False,
+        uniform_sampling_ratio:float=0.5,   # GDA PROJECT - Determines the ratio of uniform vs volumetric sampling
+        force_exact_gaussians_number:bool=False,    # GDA PROJECT - Whether to force the exact number of gaussians in the frosting
+        use_adaptative_sampling_ratio:bool=False,  # GDA PROJECT - Whether to use adaptative sampling ratio based on thickness
         *args, **kwargs) -> None:
         """
         Args:
@@ -227,6 +230,9 @@ class Frosting(nn.Module):
             initial_proposal_std_range (float, optional): Initial proposal standard deviation range. Defaults to 3..
             final_proposal_range (float, optional): Final proposal range. Defaults to 3..
             final_clamping_range (float, optional): Final clamping range. Defaults to 0.1.
+            uniform_sampling_ratio (float, optional): GDA PROJECT - Determines the ratio of uniform vs volumetric sampling when initializing frosting. Defaults to 0.5 (matches the original N/2 and N/2 strategy).
+            force_exact_gaussians_number (bool, optional): GDA PROJECT - Whether to force the exact number of gaussians in the frosting. Defaults to False.
+            use_adaptative_sampling_ratio (bool, optional): GDA PROJECT - Whether to use adaptative sampling ratio based on thickness. Defaults to False.
         """
         
         super(Frosting, self).__init__()
@@ -471,29 +477,173 @@ class Frosting(nn.Module):
                         
         cell_volumes = base_areas * base_heights
 
-        # We first sample at least n_min_gaussian_per_cell points per cell. 
-        # We update the number of gaussians if needed.
-        if n_min_gaussian_per_cell == 'auto':
-            n_min_gaussian_per_cell = int(np.ceil(n_gaussians_in_frosting / (2*len(cell_volumes))))
-            print(f"Using n_min_gaussian_per_cell={n_min_gaussian_per_cell} (computed automatically).")
+        # ======================================================================
+        # GDA PROJECT: ADAPTIVE RATIO CALCULATION
+        # ======================================================================
+        if hasattr(self, '_inner_dist') and hasattr(self, '_outer_dist'):
+            thickness_per_vertex = (self._outer_dist - self._inner_dist).abs()
+            avg_thickness = thickness_per_vertex.mean().item()
+            std_thickness = thickness_per_vertex.std().item()
+            max_thickness = thickness_per_vertex.max().item()
 
-        if (len(cell_volumes) * n_min_gaussian_per_cell) > n_gaussians_in_frosting:
-            print(f"Warning: The number of cells ({len(cell_volumes)}) x n_min_gaussian_per_cell ({n_min_gaussian_per_cell}) is larger than the number of gaussians in the frosting ({n_gaussians_in_frosting}).")
-            print(f"Updating the number of gaussians in the frosting to {len(cell_volumes) * n_min_gaussian_per_cell}.")
-            n_gaussians_in_frosting = len(cell_volumes) * n_min_gaussian_per_cell
-            self.n_gaussians_in_frosting = n_gaussians_in_frosting
-        point_cell_indices = torch.arange(len(cell_volumes), device=device).repeat(n_min_gaussian_per_cell)
+            bbox_min = self._shell_base_verts.min(dim=0)[0]
+            bbox_max = self._shell_base_verts.max(dim=0)[0]
+            scene_scale = (bbox_max - bbox_min).norm().item()
+            if scene_scale < 1e-6: scene_scale = 1.0    # Safety
+
+            # Relative thickness values
+            rel_mean = avg_thickness / scene_scale
+            rel_std = std_thickness / scene_scale
+
+            # DECISION METRIC: MEAN + STD (Upper Confidence Bound)
+            # We use (mu + sigma) to capture both the average thickness and its variability
+            fuzziness_score = rel_mean + rel_std
+
+            print(f"\n" + "="*60)
+            print(f" [GDA ADAPTIVE ANALYSIS - ROBUST]")
+            print(f" ="*30)
+            print(f" > Scene Scale (Diag):    {scene_scale:.4f}")
+            print(f" > Relative Mean:         {rel_mean:.6f}")
+            print(f" > Relative Std:          {rel_std:.6f}")
+            print(f" > Fuzziness Score:       {fuzziness_score:.6f} (Mean + Std)")
+
+            # Adaptative logic
+            if use_adaptative_sampling_ratio:
+                # 1. REFERENCE VALUE (Empirically updated from Shelly Dataset analysis)
+                _REL_SCORE_REF = 0.035
+                
+                # 2. INVERSE LINEAR MAPPING
+                # Logic: Thicker scene -> Needs more volume points -> Lower Uniform Ratio.
+                # Mapping: 
+                #   Score 0.000 -> Ratio 0.90 (Mainly Surface)
+                #   Score 0.035 -> Ratio 0.10 (Mainly Volume)
+                _RATIO_AT_MAX_SCORE = 0.1
+                _RATIO_AT_MIN_SCORE = 0.9
+                _slope = (_RATIO_AT_MAX_SCORE - _RATIO_AT_MIN_SCORE) / (_REL_SCORE_REF - 0.0)
+                _intercept = _RATIO_AT_MIN_SCORE
+                
+                # Equation of the line: y = mx + b
+                # ratio = slope * thickness + intercept
+                calculated_ratio = (_slope * fuzziness_score) + _intercept
+                
+                # 3. SAFETY CLAMPING
+                # Ensure we never go below 10% or above 90% uniform samples
+                calculated_ratio = max(
+                    _RATIO_AT_MAX_SCORE,
+                    min(_RATIO_AT_MIN_SCORE, calculated_ratio)
+                )
+
+                # print(f" [GDA] Adaptive Mode Active:")
+                # print(f"    > Configuration:       Score[{0.0}-{_REL_SCORE_REF}] -> Ratio[{_RATIO_AT_MIN_SCORE}-{_RATIO_AT_MAX_SCORE}]")
+                # print(f"    > Calculated Slope:    {_slope:.4f}")
+                # print(f"    > Current Thickness:   {avg_thickness:.5f}")
+                # print(f"    > OPTIMIZED RATIO:     {calculated_ratio:.4f}")
+
+                print(f" [GDA] Strategy Decided:")
+                print(f"    > Ref Score (Max):    {_REL_SCORE_REF}")
+                print(f"    > Ratio Intensity:    {fuzziness_score / _REL_SCORE_REF:.2f}")
+                print(f"    > OPTIMIZED RATIO:    {calculated_ratio:.4f}")
+
+                uniform_sampling_ratio = calculated_ratio
+
+            print(f"="*60 + "\n")
         
-        # And we sample more points in cells with larger volumes
-        if n_gaussians_in_frosting > (len(cell_volumes) * n_min_gaussian_per_cell):
-            random_indices = torch.multinomial(
-                cell_volumes / cell_volumes.sum(), 
-                num_samples=max(0, n_gaussians_in_frosting - (len(cell_volumes) * n_min_gaussian_per_cell)),
-                replacement=True
-                ).to(device)
-            point_cell_indices = torch.cat([point_cell_indices, random_indices], dim=0)
-        self._point_cell_indices = torch.nn.Parameter(point_cell_indices, requires_grad=False).to(device)
+        else:
+            print("[GDA Warning] Thickness could not be computed (dists missing).")
 
+        # ======================================================================
+        # GDA PROJECT: CUSTOM SAMPLING STRATEGY
+        # ======================================================================
+        # We allow to sample a certain ratio of points uniformly, and the rest 
+        # according to the volumetric distribution instead of the original fixed
+        # strategy of N/2 and N/2.
+        n_uniform_quantity = int(uniform_sampling_ratio * n_gaussians_in_frosting)    # lambda * N
+        n_volumetric_quantity = n_gaussians_in_frosting - n_uniform_quantity
+
+        print(f"GDA PROJECT - Initialization Strategy:")
+        print(f"   > Force Exact Budget: {force_exact_gaussians_number}")
+        print(f"   > Target Budget: {n_gaussians_in_frosting}")
+        print(f"   > Ratio Uniform: {uniform_sampling_ratio}")
+        print(f"   > Total cell count: {len(cell_volumes)}")
+
+        # STRICT MODE: We force the exact number of gaussians in the frosting
+        if force_exact_gaussians_number:
+            print("   > Mode: STRICT (Allowing empty cells to respect budget)")
+
+            # Uniform sampling: we try to cover as much as possible the different cells
+            if n_uniform_quantity > 0:
+                num_cells = len(cell_volumes)
+                if num_cells > 0:
+                    # We compute how many full passes we can do
+                    n_full_passes = n_uniform_quantity // num_cells
+                    n_remainder = n_uniform_quantity % num_cells
+                    parts = []
+
+                    # First part: full passes (full coverage, lists of all cell indices)
+                    if n_full_passes > 0:
+                        parts.append(torch.arange(num_cells, device=device).repeat(n_full_passes))
+                    
+                    # Second part: remainder (random sampling among all cells)
+                    if n_remainder > 0:
+                        remainder_indices = torch.randint(
+                            low=0, high=num_cells, 
+                            size=(n_remainder,), device=device
+                        )
+                        parts.append(remainder_indices)
+                    
+                    # Combine both parts
+                    uniform_indices = torch.cat(parts, dim=0)
+                else:   # No cells available
+                    uniform_indices = torch.tensor([], device=device, dtype=torch.long)
+            else:   # No uniform samples
+                uniform_indices = torch.tensor([], device=device, dtype=torch.long)
+
+            # Volumetric sampling
+            if n_volumetric_quantity > 0:
+                vol_probs = cell_volumes / cell_volumes.sum()
+                volumetric_indices = torch.multinomial(
+                    vol_probs, num_samples=n_volumetric_quantity, replacement=True
+                ).to(device)
+            else:
+                volumetric_indices = torch.tensor([], device=device, dtype=torch.long)
+
+            # Concatenate both sets of indices
+            point_cell_indices = torch.cat([uniform_indices, volumetric_indices], dim=0)
+
+        # ORIGINAL MODE: We try to respect the budget, but we may exceed it if needed
+        else:
+            print("   > Mode: LEGACY (Guarantees coverage, may increase budget)")
+
+            # We first sample at least n_min_gaussian_per_cell points per cell. 
+            # We update the number of gaussians if needed.
+            if n_min_gaussian_per_cell == 'auto':
+                # We distribute uniformly the n_uniform_quantity points among all cells
+                if len(cell_volumes > 0):
+                    n_min_gaussian_per_cell = int(np.ceil(n_uniform_quantity / len(cell_volumes)))
+                else:
+                    n_min_gaussian_per_cell = 0
+
+                print(f"   > Legacy n_min per cell: {n_min_gaussian_per_cell}")
+
+            if (len(cell_volumes) * n_min_gaussian_per_cell) > n_gaussians_in_frosting:
+                print(f"Warning: The number of cells ({len(cell_volumes)}) x n_min_gaussian_per_cell ({n_min_gaussian_per_cell}) is larger than the number of gaussians in the frosting ({n_gaussians_in_frosting}).")
+                print(f"Updating the number of gaussians in the frosting to {len(cell_volumes) * n_min_gaussian_per_cell}.")
+                n_gaussians_in_frosting = len(cell_volumes) * n_min_gaussian_per_cell
+                self.n_gaussians_in_frosting = n_gaussians_in_frosting
+            point_cell_indices = torch.arange(len(cell_volumes), device=device).repeat(n_min_gaussian_per_cell)
+        
+            # And we sample more points in cells with larger volumes
+            if n_gaussians_in_frosting > (len(cell_volumes) * n_min_gaussian_per_cell):
+                random_indices = torch.multinomial(
+                    cell_volumes / cell_volumes.sum(), 
+                    num_samples=max(0, n_gaussians_in_frosting - (len(cell_volumes) * n_min_gaussian_per_cell)),
+                    replacement=True
+                    ).to(device)
+                point_cell_indices = torch.cat([point_cell_indices, random_indices], dim=0)
+
+        self._point_cell_indices = torch.nn.Parameter(point_cell_indices, requires_grad=False).to(device)
+        print(f"   > Final Actual Gaussian Count: {self.n_gaussians_in_frosting}")
+        # ----------------------------------------------------------------------
 
         # ===== Initialize Gaussians for frosting =====
         shell_verts = torch.cat([inner_verts[:, None], outer_verts[:, None]], dim=1)
@@ -2289,6 +2439,8 @@ def load_frosting_model(
     frosting_checkpoint_path, 
     nerfmodel=None,
     device=None,
+    uniform_sampling_ratio=0.5, # GDA PROJECT
+    force_exact_gaussians_number=False, # GDA PROJECT
     **kwargs,  # Just for compatibility with the old function
 ):
     if device is None:
@@ -2347,6 +2499,8 @@ def load_frosting_model(
         avoid_self_intersections=False,
         use_constant_frosting_size=False,
         device=device,
+        uniform_sampling_ratio=uniform_sampling_ratio,  # GDA PROJECT
+        force_exact_gaussians_number=force_exact_gaussians_number,  # GDA PROJECT
     )
     
     # Retrieve the background Gaussians parameters

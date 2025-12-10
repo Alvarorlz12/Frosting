@@ -121,7 +121,24 @@ if __name__ == "__main__":
                         help='Use standard config for a high poly mesh, with 1M vertices and 1 Gaussians per triangle.')
     parser.add_argument('--refinement_time', type=str, default=None, 
                         help="Default configs for time to spend on refinement. Can be 'short', 'medium' or 'long'.")
-      
+
+    # - GDA PROJECT ------------------------------------------------------------
+    # Flexible distribution for frosting initialization
+    parser.add_argument('--uniform_sampling_ratio', type=float, default=0.5,
+                        help='GDA PROJECT - Determines the ratio of uniform vs volumetric sampling when initializing frosting. Default is 0.5 (matches the original N/2 and N/2 strategy).')
+    # Allow starting from a precomputed SuGaR model and mesh
+    parser.add_argument('--precomputed_sugar_path', type=str, default=None,
+                    help='Path to a pre-trained coarse SuGaR model to skip coarse optimization.')
+    parser.add_argument('--precomputed_mesh_path', type=str, default=None,
+                    help='Path to a pre-extracted mesh to skip extraction.')
+    # Allow forcing exact number of Gaussians in frosting
+    parser.add_argument('--force_exact_gaussians_number', type=str2bool, default=False,
+                        help='If True, forces the exact number of Gaussians in frosting by adjusting the sampling process. Default is False.')
+    # Use adaptative sampling ratio based on thickness
+    parser.add_argument('--use_adaptative_sampling_ratio', type=str2bool, default=False,
+                        help='GDA PROJECT - If True, uses an adaptative sampling ratio based on the thickness of the scene when initializing frosting. Default is False.')
+    # --------------------------------------------------------------------------
+
     # Evaluation split
     parser.add_argument('--eval', type=str2bool, default=False, help='Use eval split.')
 
@@ -149,53 +166,64 @@ if __name__ == "__main__":
     if args.export_ply:
         print('Will export a ply file with the refined 3D Gaussians at the end of the training.')
     
+    # - GDA PROJECT ------------------------------------------------------------
+    # print(f"#################### TRAIN")
+    # print(f"Arg precomputed_sugar_path: {args.precomputed_sugar_path}, {isinstance(args.precomputed_sugar_path, str)}")
+    # print(f"Arg precomputed_mesh_path: {args.precomputed_mesh_path}, {isinstance(args.precomputed_mesh_path, str)}")
+    if args.precomputed_sugar_path is not None:
+        print('Skipping coarse SuGaR optimization. Loading from:', args.precomputed_sugar_path)
+        coarse_sugar_path = args.precomputed_sugar_path
     # ----- Optimize coarse SuGaR -----
-    coarse_args = AttrDict({
-        'checkpoint_path': args.checkpoint_path,
-        'scene_path': args.scene_path,
-        'iteration_to_load': args.iteration_to_load,
-        'output_dir': None,
-        'eval': args.eval,
-        'estimation_factor': 0.2,
-        'normal_factor': 0.2,
-        'gpu': args.gpu,
-        'white_background': args.white_background,
-    })
-    if args.regularization_type == 'sdf':
-        coarse_sugar_path = coarse_training_with_sdf_regularization(coarse_args)
-    elif args.regularization_type == 'density':
-        coarse_sugar_path = coarse_training_with_density_regularization(coarse_args)
-    elif args.regularization_type == 'dn_consistency':
-        coarse_sugar_path = coarse_training_with_density_regularization_and_dn_consistency(coarse_args)
     else:
-        raise ValueError(f'Unknown regularization type: {args.regularization_type}')
+        coarse_args = AttrDict({
+            'checkpoint_path': args.checkpoint_path,
+            'scene_path': args.scene_path,
+            'iteration_to_load': args.iteration_to_load,
+            'output_dir': None,
+            'eval': args.eval,
+            'estimation_factor': 0.2,
+            'normal_factor': 0.2,
+            'gpu': args.gpu,
+            'white_background': args.white_background,
+        })
+        if args.regularization_type == 'sdf':
+            coarse_sugar_path = coarse_training_with_sdf_regularization(coarse_args)
+        elif args.regularization_type == 'density':
+            coarse_sugar_path = coarse_training_with_density_regularization(coarse_args)
+        elif args.regularization_type == 'dn_consistency':
+            coarse_sugar_path = coarse_training_with_density_regularization_and_dn_consistency(coarse_args)
+        else:
+            raise ValueError(f'Unknown regularization type: {args.regularization_type}')
     
-    
-    # ----- Extract shell base from coarse SuGaR -----
-    shell_base_args = AttrDict({
-        'scene_path': args.scene_path,
-        'checkpoint_path': args.checkpoint_path,
-        'iteration_to_load': args.iteration_to_load,
-        'coarse_model_path': coarse_sugar_path,
-        'surface_level': args.surface_level,
-        'decimation_target': args.n_vertices_in_mesh,
-        'poisson_depth': args.poisson_depth,
-        'cleaning_quantile': args.cleaning_quantile,
-        'connected_components_vis_th': args.connected_components_vis_th,
-        'project_mesh_on_surface_points': args.project_mesh_on_surface_points,
-        'mesh_output_dir': None,
-        'bboxmin': args.bboxmin,
-        'bboxmax': args.bboxmax,
-        'center_bbox': args.center_bbox,
-        'gpu': args.gpu,
-        'eval': args.eval,
-        'use_centers_to_extract_mesh': False,
-        'use_marching_cubes': False,
-        'use_vanilla_3dgs': False,
-    })
-    shell_base_path = extract_shell_base_from_coarse_sugar(shell_base_args)[0]
-    
-    
+    if args.precomputed_mesh_path is not None:
+        print('Skipping mesh extraction. Loading from:', args.precomputed_mesh_path)
+        shell_base_path = args.precomputed_mesh_path
+    else:
+        # ----- Extract shell base from coarse SuGaR -----
+        shell_base_args = AttrDict({
+            'scene_path': args.scene_path,
+            'checkpoint_path': args.checkpoint_path,
+            'iteration_to_load': args.iteration_to_load,
+            'coarse_model_path': coarse_sugar_path,
+            'surface_level': args.surface_level,
+            'decimation_target': args.n_vertices_in_mesh,
+            'poisson_depth': args.poisson_depth,
+            'cleaning_quantile': args.cleaning_quantile,
+            'connected_components_vis_th': args.connected_components_vis_th,
+            'project_mesh_on_surface_points': args.project_mesh_on_surface_points,
+            'mesh_output_dir': None,
+            'bboxmin': args.bboxmin,
+            'bboxmax': args.bboxmax,
+            'center_bbox': args.center_bbox,
+            'gpu': args.gpu,
+            'eval': args.eval,
+            'use_centers_to_extract_mesh': False,
+            'use_marching_cubes': False,
+            'use_vanilla_3dgs': False,
+        })
+        shell_base_path = extract_shell_base_from_coarse_sugar(shell_base_args)[0]
+    # --------------------------------------------------------------------------
+
     # ----- Optimize Frosting -----
     frosting_args = AttrDict({
         'scene_path': args.scene_path,
@@ -232,6 +260,9 @@ if __name__ == "__main__":
         'eval': args.eval,
         'gpu': args.gpu,
         'white_background': args.white_background,
+        'uniform_sampling_ratio': args.uniform_sampling_ratio,  # GDA PROJECT
+        'force_exact_gaussians_number': args.force_exact_gaussians_number,  # GDA PROJECT
+        'use_adaptative_sampling_ratio': args.use_adaptative_sampling_ratio,  # GDA PROJECT
     })
     frosting_path = refined_training(frosting_args)
         

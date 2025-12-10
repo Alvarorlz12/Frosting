@@ -166,3 +166,24 @@ dmypy.json
 # Pyre type checker
 .pyre/
 learnableearthparser/fast_sampler/_sampler.c
+
+# GDA PROJECT   ################################################################
+slurm/
+slurm/*
+saved_images/
+saved_images/*
+nvdiffrast/
+nvdiffrast/*
+data/
+own_data/
+
+train_original.py
+train_full_pipeline_original.py
+metrics.ipynb
+metrics_mod.py
+frosting_scene/frosting_model_original.py
+frosting_scene/frosting_model_pre_forcing.py
+frosting_scene/frosting_model_pre_rel.py
+frosting_trainers/refine_original.py
+
+################################################################################
